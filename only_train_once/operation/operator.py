@@ -1196,6 +1196,7 @@ BASIC_MODULES = {
     "Conv2d": Conv2dOTO,
     "Linear": LinearOTO,
     "BatchNorm2d": BatchNormOTO,
+    "BatchNorm1d": BatchNormOTO,
     "InstanceNorm2d": InstanceNormOTO,
     "GroupNorm": GroupNormOTO,
     "Embedding": EmbeddingOTO,
