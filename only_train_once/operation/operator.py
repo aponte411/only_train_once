@@ -254,7 +254,11 @@ class Conv1dOTO(Operator):
         param_groups["p_names"] = list()
         param_groups["params"] = list()
         param_groups["p_transform"] = list()
+        param_groups["num_groups"] = self.num_groups
         for p_name in param_names:
+            param = self.name_to_param[p_name]
+            if param.shape[0] == 1:
+                continue
             param_groups["p_names"].append(p_name)
             param_groups["params"].append(self.name_to_param[p_name])
             param_groups["p_transform"].append(self.p_transform)
@@ -292,7 +296,6 @@ class Conv1dOTO(Operator):
         stride = self.cfg_params["strides"][0]
         kernel_length = self.cfg_params["kernel_shape"][0]
         if "pads" in self.cfg_params:
-            # Add padding to input length, using index [0] for start padding in 1D case
             length_in = length_in + self.cfg_params["pads"][0] * 2
         sliding_times = (length_in - kernel_length + stride) // stride
         flops = (
@@ -305,6 +308,82 @@ class Conv1dOTO(Operator):
         if "group" in self.cfg_params:
             flops //= self.cfg_params["group"]
         return flops
+
+    def set_num_groups(self):
+        self.num_groups = max(self.module.out_channels, 1)
+
+    # def set_num_groups(self):
+    #     self.num_groups = 1
+    #     for param_name in self.name_to_param:
+    #         param = self.name_to_param[param_name]
+    #         if param_name.endswith(".weight"):
+    #             # For Conv1d, weight shape is (out_channels, in_channels/groups, kernel_size)
+    #             self.num_groups = max(
+    #                 self.num_groups, param.shape[0]
+    #             )  # Use out_channels
+    #         elif param_name.endswith(".bias"):
+    #             self.num_groups = max(self.num_groups, param.shape[0])
+
+
+class ConvTranspose1dOTO(Operator):
+    def __init__(self, id=None, _type=None, cfg_params=dict(), module=None):
+        super().__init__(id, _type, cfg_params, module)
+        self.is_stem = True
+        self.set_num_groups()
+        self.p_transform = TensorTransform.TRANSPOSE
+
+    def set_num_groups(self):
+        self.num_groups = 1
+        for param_name in self.name_to_param:
+            param = self.name_to_param[param_name]
+            if param_name.endswith(".weight"):
+                self.num_groups = max(self.num_groups, param.shape[1])
+            elif param_name.endswith(".bias"):
+                self.num_groups = max(self.num_groups, param.shape[0])
+
+    def get_param_groups(self, param_names=[]):
+        param_groups = dict()
+        param_groups["op"] = "convtranspose1d"
+        param_groups["p_names"] = list()
+        param_groups["params"] = list()
+        param_groups["p_transform"] = list()
+        for p_name in param_names:
+            param_groups["p_names"].append(p_name)
+            param_groups["params"].append(self.name_to_param[p_name])
+            param_groups["p_transform"].append(self.p_transform)
+        return param_groups
+
+    def prune_out_dim(self, pruned_idxes=list(), **kwargs):
+        preserved_idxes = list(set(range(self.module.out_channels)) - set(pruned_idxes))
+        preserved_idxes.sort()
+        self.module.out_channels = self.module.out_channels - len(pruned_idxes)
+
+        if not self.module.transposed:
+            self.module.weight = self.prune_param_and_grad(
+                self.module.weight, preserved_idxes, 0
+            )
+        else:
+            self.module.weight = self.prune_param_and_grad(
+                self.module.weight, preserved_idxes, 1
+            )
+
+        if self.module.bias is not None:
+            self.module.bias = self.prune_param_and_grad(
+                self.module.bias, preserved_idxes, 0
+            )
+
+    def prune_in_dim(self, pruned_idxes=list(), **kwargs):
+        preserved_idxes = list(set(range(self.module.in_channels)) - set(pruned_idxes))
+        preserved_idxes.sort()
+        self.module.in_channels = self.module.in_channels - len(pruned_idxes)
+        if not self.module.transposed:
+            self.module.weight = self.prune_param_and_grad(
+                self.module.weight, preserved_idxes, 1
+            )
+        else:
+            self.module.weight = self.prune_param_and_grad(
+                self.module.weight, preserved_idxes, 0
+            )
 
 
 class ConvTranspose2dOTO(Operator):
@@ -1166,12 +1245,16 @@ class PReLUOTO(Operator):
         self.set_num_groups()
         self.p_transform = TensorTransform.ACCESSORY
 
+    def set_num_groups(self):
+        self.num_groups = self.module.num_parameters
+
     def get_param_groups(self, param_names=[]):
         param_groups = dict()
         param_groups["op"] = "prelu"
         param_groups["p_names"] = list()
         param_groups["params"] = list()
         param_groups["p_transform"] = list()
+        param_groups["num_groups"] = self.num_groups
         for p_name in param_names:
             if p_name in self.name_to_param:
                 param_groups["p_names"].append(p_name)
@@ -1180,23 +1263,32 @@ class PReLUOTO(Operator):
         return param_groups
 
     def prune_out_dim(self, pruned_idxes=list(), **kwargs):
+        if self.module.num_parameters == 1:
+            return
         preserved_idxes = list(
             set(range(self.module.num_parameters)) - set(pruned_idxes)
         )
         preserved_idxes.sort()
+        new_num_params = len(preserved_idxes)
+        if new_num_params == 0:
+            new_num_params = 1
+            preserved_idxes = [0]
+        self.module.num_parameters = new_num_params
         self.module.weight = self.prune_param_and_grad(
             self.module.weight, preserved_idxes, 0
         )
-        self.module.num_parameters = self.module.num_parameters - len(pruned_idxes)
+        # self.module.num_parameters = self.module.num_parameters - len(pruned_idxes)
+        if self.module.num_parameters == 1:
+            self.module.weight.data = self.module.weight.data.view(1)
 
 
 BASIC_MODULES = {
     "ConvTranspose2d": ConvTranspose2dOTO,
+    "ConvTranspose1d": ConvTranspose1dOTO,
     "Conv1d": Conv1dOTO,
     "Conv2d": Conv2dOTO,
     "Linear": LinearOTO,
     "BatchNorm2d": BatchNormOTO,
-    "BatchNorm1d": BatchNormOTO,
     "InstanceNorm2d": InstanceNormOTO,
     "GroupNorm": GroupNormOTO,
     "Embedding": EmbeddingOTO,

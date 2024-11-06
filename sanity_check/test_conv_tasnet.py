@@ -2,58 +2,25 @@ import os
 import unittest
 
 import torch
-import torch.nn as nn
+from torchaudio.models import conv_tasnet_base
 
 from only_train_once import OTO
 
 OUT_DIR = "./cache"
 
 
-class MiniDeepSpeech(nn.Module):
-    """A simplified version of DeepSpeech with Conv1d layers"""
-
-    def __init__(self):
-        super().__init__()
-        self.input_channels = 1
-        self.hidden_channels = 32
-        self.output_channels = 16
-        self.conv = nn.Sequential(
-            nn.Conv1d(
-                self.input_channels,
-                self.hidden_channels,
-                kernel_size=5,
-                stride=1,
-                padding=2,
-            ),
-            nn.BatchNorm1d(self.hidden_channels),
-            nn.ReLU(),
-            nn.Conv1d(
-                self.hidden_channels,
-                self.output_channels,
-                kernel_size=5,
-                stride=1,
-                padding=2,
-            ),
-            nn.BatchNorm1d(self.output_channels),
-            nn.ReLU(),
-        )
-
-    def forward(self, x):
-        return self.conv(x)
-
-
-class TestDeepSpeech(unittest.TestCase):
+class TestConvTasNet(unittest.TestCase):
     def test_sanity(self):
-        """Main OTO test"""
-
-        model = MiniDeepSpeech()
         batch_size = 2
-        sequence_length = 100
-        dummy_input = torch.randn(batch_size, 1, sequence_length)
+        sample_length = 32000
+
+        dummy_input = torch.randn(batch_size, 1, sample_length)
+        model = conv_tasnet_base()
+        model
         oto = OTO(model, dummy_input)
         print("Testing visualization...")
         oto.visualize(view=False, out_dir=OUT_DIR)
-        full_flops = oto.compute_flops(in_million=False, in_billion=False)["total"]
+        full_flops = oto.compute_flops(in_million=True)["total"]
         full_num_params = oto.compute_num_params()
         print("Full FLOPs:", full_flops)
         print("Full number of parameters:", full_num_params)
@@ -80,15 +47,13 @@ class TestDeepSpeech(unittest.TestCase):
         )
         print("Computing compression metrics...")
         oto_compressed = OTO(compressed_model, dummy_input)
-        compressed_flops = oto_compressed.compute_flops(in_million=False)["total"]
+        compressed_flops = oto_compressed.compute_flops(in_million=True)["total"]
         compressed_num_params = oto_compressed.compute_num_params()
         print(f"Compressed_FLOPs: {compressed_flops}")
-        print(f"Compressed number of parameters: {compressed_num_params}")
-        self.assertNotEqual(compressed_flops, 0)
-        # flop_reduction = 1.0 - compressed_flops / full_flops
-        # param_reduction = 1.0 - compressed_num_params / full_num_params
-        # print(f"FLOP reduction (%): {flop_reduction * 100:.2f}%")
-        # print(f"Param reduction (%): {param_reduction * 100:.2f}%")
+        flop_reduction = 1.0 - compressed_flops / full_flops
+        param_reduction = 1.0 - compressed_num_params / full_num_params
+        print(f"FLOP reduction (%): {flop_reduction * 100:.2f}%")
+        print(f"Param reduction (%): {param_reduction * 100:.2f}%")
 
 
 if __name__ == "__main__":
