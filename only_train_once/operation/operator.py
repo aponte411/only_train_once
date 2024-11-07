@@ -1245,8 +1245,16 @@ class PReLUOTO(Operator):
         self.set_num_groups()
         self.p_transform = TensorTransform.ACCESSORY
 
+    # def set_num_groups(self):
+    #     self.num_groups = self.module.num_parameters
     def set_num_groups(self):
-        self.num_groups = self.module.num_parameters
+        if self.module.num_parameters == 1:
+            # Shared parameter for all channels - we dont prune
+            self.num_groups = 1
+            self.is_prunable = False
+        else:
+            # Channel-wise case - number of groups equals number of channels
+            self.num_groups = self.module.num_parameters
 
     def get_param_groups(self, param_names=[]):
         param_groups = dict()
